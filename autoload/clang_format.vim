@@ -139,6 +139,14 @@ function! clang_format#is_invalid() abort
         let s:version = v
     endif
 
+    if g:clang_format#auto_format_git_diff &&
+                \ !exists('s:git_available')
+        if !executable(g:clang_format#git)
+            return 1
+        endif
+        let s:git_available = 1
+    endif
+
     return 0
 endfunction
 
@@ -184,6 +192,7 @@ let g:clang_format#extra_args = s:getg('clang_format#extra_args', "")
 if type(g:clang_format#extra_args) == type([])
     let g:clang_format#extra_args = join(g:clang_format#extra_args, " ")
 endif
+let g:clang_format#git = s:getg('clang_format#git', 'git')
 
 let g:clang_format#code_style = s:getg('clang_format#code_style', 'google')
 let g:clang_format#style_options = s:getg('clang_format#style_options', {})
@@ -193,6 +202,8 @@ let g:clang_format#detect_style_file = s:getg('clang_format#detect_style_file', 
 let g:clang_format#enable_fallback_style = s:getg('clang_format#enable_fallback_style', 1)
 
 let g:clang_format#auto_format = s:getg('clang_format#auto_format', 0)
+let g:clang_format#auto_format_git_diff = s:getg('clang_format#auto_format_git_diff', 0)
+let g:clang_format#auto_format_git_diff_fallback = s:getg('clang_format#auto_format_git_diff_fallback', 'file')
 let g:clang_format#auto_format_on_insert_leave = s:getg('clang_format#auto_format_on_insert_leave', 0)
 let g:clang_format#auto_formatexpr = s:getg('clang_format#auto_formatexpr', 0)
 " }}}
@@ -203,8 +214,13 @@ function! s:detect_style_file() abort
     return findfile('.clang-format', dirname.';') != '' || findfile('_clang-format', dirname.';') != ''
 endfunction
 
-function! clang_format#format(line1, line2) abort
-    let args = printf(' -lines=%d:%d', a:line1, a:line2)
+" clang_format#format is were the magic happends.
+" ranges is a list of pairs, like [[start1,end1],[start2,end2]...]
+function! clang_format#format(ranges) abort
+    let args = ''
+    for range in a:ranges
+        let args .= printf(' -lines=%d:%d', range[0], range[1])
+    endfor
     if ! (g:clang_format#detect_style_file && s:detect_style_file())
         if g:clang_format#enable_fallback_style
             let args .= ' ' . s:shellescape(printf('-style=%s', s:make_style_options())) . ' '
@@ -226,11 +242,11 @@ endfunction
 " }}}
 
 " replace buffer {{{
-function! clang_format#replace(line1, line2, ...) abort
+function! clang_format#replace(ranges, ...) abort
     call s:verify_command()
 
     let pos_save = a:0 >= 1 ? a:1 : getpos('.')
-    let formatted = clang_format#format(a:line1, a:line2)
+    let formatted = clang_format#format(a:ranges)
     if !s:success(formatted)
         call s:error_message(formatted)
         return
@@ -256,7 +272,7 @@ function! s:format_inserted_area() abort
     let pos = getpos('.')
     " When in the same buffer
     if &modified && ! empty(s:pos_on_insertenter) && s:pos_on_insertenter[0] == pos[0]
-        call clang_format#replace(s:pos_on_insertenter[1], line('.'))
+        call clang_format#replace([[s:pos_on_insertenter[1], line('.')]])
         let s:pos_on_insertenter = []
     endif
 endfunction
@@ -291,6 +307,95 @@ endfunction
 function! clang_format#disable_auto_format() abort
     let g:clang_format#auto_format = 0
 endfunction
+" s:chdir will change the directory respecting
+" local/tab-local/global directory settings.
+function! s:chdir(dir)
+    " This is a dirty hack to fix tcd breakages on neovim.
+    " Future work should be based on nvim API.
+    if exists(':tcd')
+        let chdir = haslocaldir() ? 'lcd' : haslocaldir(-1, 0) ? 'tcd' : 'cd'
+    else
+        let chdir = exists('*haslocaldir') && haslocaldir() ? 'lcd' : 'cd'
+    endif
+    execute chdir fnameescape(a:dir)
+endfunction
+
+" s:strip: helper function to strip a string
+function! s:strip(string)
+    return substitute(a:string, '^\s*\(.\{-}\)\s*\n\=$', '\1', '')
+endfunction
+
+" this function will try to format only buffer lines diffing from git index
+" content.
+" If the file is untracked (not in a git repo or not tracked in a git repo),
+" it returns 1.
+" If the format succeeds, it returns 0.
+function! clang_format#do_auto_format_git_diff()
+    let dir = getcwd()
+    let cur_file = expand("%:p")
+    let cur_file_path = isdirectory(cur_file) ? cur_file : fnamemodify(cur_file, ":h")
+    try
+        call s:chdir(cur_file_path)
+        let top_dir=s:strip(system(
+                    \ g:clang_format#git." rev-parse --show-toplevel"))
+        if v:shell_error != 0
+            throw "untracked"
+        endif
+        call s:chdir(top_dir)
+        let cur_file = s:system(
+                    \ g:clang_format#git." ls-files --error-unmatch ".cur_file)
+        if v:shell_error != 0
+            throw "untracked"
+        endif
+        let source = join(getline(1, '$'), "\n")
+        " git show :file shows the staged content of the file:
+        "  - content in index if any (staged but not commmited)
+        "  - else content in HEAD
+        " this solution also solves the problem for 'git mv'ed file:
+        "  - if the current buffer has been renamed by simple mv (without git
+        "    add), the file is considered as untracked
+        "  - if the renamed file has been git added or git mv, git show :file
+        "    will show the expected content.
+        " this barbarian command does the following:
+        "  - diff --*-group-* options will return ranges (start,end) for each
+        "    diff chunk
+        "  - <(git show :file) is a process substitution, using /dev/fd/<n> as
+        "    temporary file for the output
+        "  - - is stdin, which is current buffer content in variable 'source'
+        let diff_cmd =
+                \ 'diff <('.g:clang_format#git.' show :'.cur_file.') - '.
+                \ '--old-group-format="" --unchanged-group-format="" '.
+                \ '--new-group-format="%dF-%dL%c''\\012''" '.
+                \ '--changed-group-format="%dF-%dL%c''\\012''"'
+        let ranges = s:system(diff_cmd, source)
+        if !(v:shell_error == 0 || v:shell_error == 1)
+            echoerr diff_cmd
+            echoerr ranges
+            throw 'git diff failed'
+        endif
+        let ranges = split(ranges, '\n')
+        " ranges is now a list of pairs [[start1, end1],[start2,end2]...]
+        let ranges = map(ranges, "split(v:val, '-')")
+        call clang_format#replace(ranges)
+    catch /untracked/
+        return 1
+    finally
+        call s:chdir(dir)
+    endtry
+    return 0
+endfunction
+
+function! clang_format#do_auto_format()
+    if g:clang_format#auto_format_git_diff
+        let ret = clang_format#do_auto_format_git_diff()
+        if ret == 0 ||
+           \ g:clang_format#auto_format_git_diff_fallback != 'file'
+            return
+        endif
+    endif
+    call clang_format#replace([[1, line('$')]])
+endfunction
+
 " }}}
 let &cpo = s:save_cpo
 unlet s:save_cpo
