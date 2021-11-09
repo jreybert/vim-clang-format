@@ -206,6 +206,7 @@ let g:clang_format#auto_format_git_diff = s:getg('clang_format#auto_format_git_d
 let g:clang_format#auto_format_git_diff_fallback = s:getg('clang_format#auto_format_git_diff_fallback', 'file')
 let g:clang_format#auto_format_on_insert_leave = s:getg('clang_format#auto_format_on_insert_leave', 0)
 let g:clang_format#auto_formatexpr = s:getg('clang_format#auto_formatexpr', 0)
+let g:clang_format#equal_indent = s:getg('clang_format#equal_indent', 0)
 " }}}
 
 " format codes {{{
@@ -307,6 +308,15 @@ endfunction
 function! clang_format#disable_auto_format() abort
     let g:clang_format#auto_format = 0
 endfunction
+
+function! EqualMotion(type)
+    call clang_format#replace([[line("'["), line("']")]])
+endfunction
+
+function! EqualRange() range
+    call clang_format#replace([[a:firstline, a:lastline]])
+endfunction
+
 " s:chdir will change the directory respecting
 " local/tab-local/global directory settings.
 function! s:chdir(dir)

@@ -223,6 +223,12 @@ g:clang_format#auto_formatexpr		        *g:clang_format#auto_formatexpr*
     to format. This option is not comptabile with Vim's `textwidth` feature. You
     must set `textwidth` to `0` when the `formatexpr` is set.
 
+g:clang_format#equal_indent                        *g:clang_format#equal_indent*
+
+    When this value is 1, all '=' motions are remapped to use |clang-format|
+    to format.
+    The default value is 0.
+
 g:clang_format#enable_fallback_style	  *g:clang_format#enable_fallback_style*
 
     When the value is 0, "-fallback-style=none" option is added on executing

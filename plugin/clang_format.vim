@@ -34,6 +34,13 @@ augroup plugin-clang-format-auto-format
         \     !clang_format#is_invalid() |
         \     setlocal formatexpr=clang_format#replace(v:lnum,v:lnum+v:count-1) |
         \ endif
+    autocmd FileType c,cpp,objc,java,javascript,typescript,proto,arduino
+        \ if g:clang_format#equal_indent &&
+        \     !clang_format#is_invalid() |
+        \     nmap <silent> == :call clang_format#replace([[line("."), line(".")]])<CR>|
+        \     vmap <silent> = :call EqualRange()<CR>|
+        \     nmap <silent> = :set opfunc=EqualMotion<CR>g@|
+        \ endif
 augroup END
 
 command! ClangFormatAutoToggle call clang_format#toggle_auto_format()
