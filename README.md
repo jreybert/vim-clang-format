@@ -1,3 +1,5 @@
+# WARNING: this is still a WorkInProgress branch, aimed to be force pushed regurlarly
+
 Format your C family code
 =======================================
 [![Build Status](https://travis-ci.org/rhysd/vim-clang-format.svg?branch=master)](https://travis-ci.org/rhysd/vim-clang-format)
